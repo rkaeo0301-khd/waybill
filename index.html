@@ -64,7 +64,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding-top:8px;borde
   </header>
 
   <section class="box" aria-label="기본 설정">
-    <div class="cap">기본 설정 · 한 번 고르면 기억돼요</div>
+    <div class="cap">기본 설정 · 열 때마다 새로 선택</div>
     <div class="row">
       <span class="lbl">주·야간</span>
       <div class="seg">
@@ -138,8 +138,13 @@ const $ = id => document.getElementById(id);
 function store(k,v){ try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v);}catch(e){return null} }
 const val = n => (document.querySelector(`input[name=${n}]:checked`)||{}).value || "";
 
-// remembered settings
-["shift","camp","sub"].forEach(n=>{
+// shift and camp are chosen fresh every time the page opens (never remembered)
+try{ localStorage.removeItem("cw_shift"); localStorage.removeItem("cw_camp"); }catch(e){}
+["shift","camp"].forEach(n=>{
+  document.querySelectorAll(`input[name=${n}]`).forEach(r=>{ r.checked=false; r.addEventListener("change",update); });
+});
+// sub route letter is remembered
+["sub"].forEach(n=>{
   const saved=store("cw_"+n);
   document.querySelectorAll(`input[name=${n}]`).forEach(r=>{
     if(saved && r.value===saved) r.checked=true;
