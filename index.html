@@ -48,6 +48,11 @@ input:focus{outline:3px solid var(--accent);outline-offset:1px}
 .cam video{width:100%;height:100%;object-fit:cover;display:block}
 .cam .guide{position:absolute;inset:12%;border:3px solid rgba(255,255,255,.8);border-radius:8px;pointer-events:none}
 .cam .tip{position:absolute;left:0;right:0;bottom:0;padding:8px;text-align:center;color:#fff;background:rgba(0,0,0,.45);font-size:14px}
+.camctl{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between}
+.zoom{display:flex;gap:6px}
+.chip{font-family:var(--mono);font-size:15px;font-weight:600;padding:8px 14px;border-radius:999px;border:1.5px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.tapdot{position:absolute;width:64px;height:64px;margin:-32px 0 0 -32px;border:2px solid #ffd54a;border-radius:50%;pointer-events:none}
 .summary{font-family:var(--mono);font-size:14px;background:var(--bg);border-radius:8px;padding:10px 12px;display:grid;grid-template-columns:auto 1fr;gap:2px 12px;margin:0}
 .summary dt{color:var(--muted);font-family:var(--sans)}.summary dd{margin:0;word-break:break-all}
 .hist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
@@ -87,8 +92,18 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding-top:8px;borde
     <div class="cam" id="cam" hidden>
       <video id="video" playsinline muted autoplay></video>
       <div class="guide"></div>
-      <div class="tip">송장 오른쪽 세로 바코드나 QR 옆 네모 코드를 비춰주세요</div>
+      <div class="tip">바코드를 비추고, 흐리면 화면을 탭하세요</div>
+      <div class="tapdot" id="tapDot" hidden></div>
     </div>
+    <div class="camctl" id="camCtl" hidden>
+      <div class="zoom" id="zoomBox" hidden>
+        <button type="button" class="chip" data-z="1">1x</button>
+        <button type="button" class="chip" data-z="1.5">1.5x</button>
+        <button type="button" class="chip" data-z="2">2x</button>
+      </div>
+      <button type="button" class="chip" id="lensBtn" hidden>렌즈 바꾸기</button>
+    </div>
+    <div class="hint" id="focusInfo"></div>
     <button class="btn ghost" id="camStop" type="button" hidden>카메라 끄기</button>
     <div class="status" id="scanStatus" role="status"></div>
     <input type="tel" id="waybill" inputmode="numeric" autocomplete="off" maxlength="14" placeholder="10으로 시작 14자리" aria-label="운송장 번호">
@@ -202,26 +217,88 @@ async function scanFrame(){
   }catch(e){ console.error(e); }
   busy=false;
 }
+let track=null, caps={}, backCams=[], camIdx=0;
+async function listBackCams(){
+  try{
+    const all=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
+    const back=all.filter(d=>!/front|전면|user|facetime/i.test(d.label));
+    return back.length?back:all;
+  }catch(e){ return []; }
+}
+async function setupTrack(){
+  track=stream.getVideoTracks()[0]; caps={};
+  try{ caps=track.getCapabilities?track.getCapabilities():{}; }catch(e){}
+  const notes=[];
+  // keep refocusing on its own
+  if(caps.focusMode && caps.focusMode.includes("continuous")){
+    try{ await track.applyConstraints({advanced:[{focusMode:"continuous"}]}); notes.push("자동 초점 켜짐"); }catch(e){}
+  } else if(caps.focusMode){ notes.push("이 카메라는 자동 초점 조절을 지원하지 않아요"); }
+  else notes.push("초점은 폰이 알아서 맞춰요. 흐리면 화면을 탭하거나 송장을 조금 멀리 해보세요");
+  // zoom lets the phone stay farther away, where focus is easier
+  if(caps.zoom && caps.zoom.max>=1.5){
+    $("zoomBox").hidden=false;
+    document.querySelectorAll("#zoomBox .chip").forEach(b=>{ b.hidden=+b.dataset.z>caps.zoom.max; b.classList.toggle("on",b.dataset.z==="1"); });
+  } else $("zoomBox").hidden=true;
+  $("focusInfo").textContent=notes.join(" · ");
+  backCams=await listBackCams();
+  $("lensBtn").hidden=backCams.length<2;
+  $("camCtl").hidden=$("zoomBox").hidden && $("lensBtn").hidden;
+}
+async function openStream(deviceId){
+  const video=deviceId?{deviceId:{exact:deviceId},width:{ideal:1920},height:{ideal:1080}}:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}};
+  stream=await navigator.mediaDevices.getUserMedia({video,audio:false});
+  const v=$("video"); v.srcObject=stream;
+  try{ await v.play(); }catch(e){}
+  await setupTrack();
+}
 async function startCam(){
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ setScan("이 브라우저는 카메라를 지원하지 않아요. 크롬이나 사파리로 열어주세요","bad"); return; }
   setScan("카메라 켜는 중…");
-  try{
-    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1920},height:{ideal:1080}},audio:false});
-  }catch(e){
-    setScan(e.name==="NotAllowedError"?"카메라 권한이 거부됐어요. 주소창 옆 설정에서 카메라를 허용해주세요":"카메라를 켜지 못했어요 ("+e.name+")","bad"); return;
+  try{ await openStream(store("cw_cam")||null); }
+  catch(e){
+    try{ store("cw_cam",""); await openStream(null); }
+    catch(e2){ setScan(e2.name==="NotAllowedError"?"카메라 권한이 거부됐어요. 주소창 옆 설정에서 카메라를 허용해주세요":"카메라를 켜지 못했어요 ("+e2.name+")","bad"); return; }
   }
-  const v=$("video"); v.srcObject=stream; $("cam").hidden=false; $("camStop").hidden=false; $("camBtn").hidden=true;
-  try{ await v.play(); }catch(e){}
+  $("cam").hidden=false; $("camStop").hidden=false; $("camBtn").hidden=true;
   await initNative(); initZX();
   if(!detector && !zxOk){ setScan("바코드 엔진을 불러오지 못했어요. 번호를 직접 입력해주세요","bad"); return; }
   lastHit=null; hitCount=0; setScan("바코드를 찾는 중…");
-  timer=setInterval(scanFrame,250);
+  clearInterval(timer); timer=setInterval(scanFrame,250);
 }
 function stopCam(){
   clearInterval(timer); timer=null;
   if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-  $("cam").hidden=true; $("camStop").hidden=true; $("camBtn").hidden=false;
+  track=null;
+  $("cam").hidden=true; $("camStop").hidden=true; $("camBtn").hidden=false; $("camCtl").hidden=true; $("focusInfo").textContent="";
 }
+// tap to focus on that spot, then go back to continuous
+$("cam").addEventListener("click",async e=>{
+  if(!track) return;
+  const r=$("cam").getBoundingClientRect(), x=(e.clientX-r.left)/r.width, y=(e.clientY-r.top)/r.height;
+  const d=$("tapDot"); d.style.left=(x*100)+"%"; d.style.top=(y*100)+"%"; d.hidden=false; setTimeout(()=>d.hidden=true,700);
+  const adv={};
+  if(caps.pointsOfInterest) adv.pointsOfInterest=[{x,y}];
+  if(caps.focusMode && caps.focusMode.includes("single-shot")) adv.focusMode="single-shot";
+  else if(caps.focusMode && caps.focusMode.includes("continuous")) adv.focusMode="continuous";
+  if(!Object.keys(adv).length) return;
+  try{
+    await track.applyConstraints({advanced:[adv]});
+    if(adv.focusMode==="single-shot" && caps.focusMode.includes("continuous"))
+      setTimeout(()=>{ track && track.applyConstraints({advanced:[{focusMode:"continuous"}]}).catch(()=>{}); },1500);
+  }catch(err){}
+});
+document.querySelectorAll("#zoomBox .chip").forEach(b=>b.addEventListener("click",async ev=>{
+  ev.stopPropagation(); if(!track) return;
+  try{ await track.applyConstraints({advanced:[{zoom:+b.dataset.z}]}); document.querySelectorAll("#zoomBox .chip").forEach(x=>x.classList.toggle("on",x===b)); }catch(e){}
+}));
+$("lensBtn").addEventListener("click",async ev=>{
+  ev.stopPropagation(); if(!backCams.length) return;
+  const cur=track && track.getSettings ? track.getSettings().deviceId : null;
+  let i=backCams.findIndex(d=>d.deviceId===cur); i=(i+1)%backCams.length;
+  stream.getTracks().forEach(t=>t.stop());
+  try{ await openStream(backCams[i].deviceId); store("cw_cam",backCams[i].deviceId); setScan("렌즈 "+(i+1)+"/"+backCams.length+" · 가장 선명한 렌즈를 고르면 다음에도 그 렌즈로 켜져요"); }
+  catch(e){ setScan("이 렌즈는 켤 수 없어요. 다시 눌러 다른 렌즈를 고르세요","warn"); }
+});
 $("camBtn").addEventListener("click",startCam);
 $("camStop").addEventListener("click",()=>{ stopCam(); setScan(""); });
 document.addEventListener("visibilitychange",()=>{ if(document.hidden && stream) stopCam(); });
