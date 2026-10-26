@@ -268,7 +268,10 @@ $("openForm").addEventListener("click",()=>{ if($("openForm").getAttribute("aria
 
 $("directBtn").addEventListener("click",async()=>{
   const c=current(); const ds=$("directStatus");
-  const body=new URLSearchParams({...formData(c),pageHistory:"0,2",fvv:"1"});
+  // Same fields Google's own form sends on the final page (checked against the live form)
+  const fbzx=String(-Math.floor(Math.random()*9e18));
+  const partial=JSON.stringify([[[null,2079463189,[TYPE_VALUE],0],[null,1440280138,[c.wb],0],[null,1057399027,[c.rt],0],[null,2045610659,[c.sh],0],[null,1384182871,[c.cp],0]],null,fbzx]);
+  const body=new URLSearchParams({[E.waybill]:c.wb,[E.route]:c.rt,[E.shift]:c.sh,[E.camp]:c.cp,fvv:"1",partialResponse:partial,pageHistory:"0,2",fbzx,submissionTimestamp:"-1"});
   ds.textContent="보내는 중…"; ds.className="status";
   try{
     await fetch(FORM+"formResponse",{method:"POST",mode:"no-cors",body});
